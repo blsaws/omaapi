@@ -24,6 +24,7 @@ import android.content.Intent;
 import android.os.Binder;
 import android.os.IBinder;
 import android.view.View;
+import android.widget.Toast;
 
 import com.example.omaapi.SampleHttpd.Response.Status;
 import com.example.omaapi.R;
@@ -34,16 +35,27 @@ public class OmaApiService extends Service {
 	
 	@Override
 	public int onStartCommand(Intent intent, int flags, int startId) {
+//      Toast t = Toast.makeText(getBaseContext(), "OmaApiService (re)started\nIntent Category: "+intent.getAction(), Toast.LENGTH_LONG);
+//		t.show();
 		context = getApplicationContext();
+		
 		if (httpd == null) {
 			httpd = new HttpListener(this, Integer.parseInt(this.getString(R.string.port)));
+			try {
+				httpd.start();
+			}
+			catch (IOException ioe) {
+	      		// error handling
+	    	}
 		}
-		try {
-			httpd.start();
+		
+		if (intent.getAction() == "pushevent") {
+			SampleHttpd.pushEvent = intent.getStringExtra("data");
+            Toast toast = Toast.makeText(getBaseContext(), 
+            		"OmaApiService event:\n"+SampleHttpd.pushEvent, Toast.LENGTH_LONG);
+            toast.show();
 		}
-		catch (IOException ioe) {
-      		// error handling
-    	}
+		
     return Service.START_NOT_STICKY;
 	}
 
@@ -75,8 +87,6 @@ public class OmaApiService extends Service {
 
     public class HttpListener extends SampleHttpd {
     	private int http_port;
-    	private boolean mc_async_response = false;
-    	private String mc_result = "This is supposed to be mc scanning result";
 
         public HttpListener(Service service, int port) {
             super(port);
@@ -96,64 +106,79 @@ public class OmaApiService extends Service {
             	if (choice.equalsIgnoreCase("mc")) mc = 0;
             	if (choice.equalsIgnoreCase("cmapi")) cmapi = 0;
             }
-            
-            // Stub for WRAPI Push API: currently only verifies events can be delivered... 
-            // the connection is closed immediately which causes an error after the first event
-            // TODO: add SSE support to SampleHttpd.java
-            if (push==0) {
-                SampleHttpd.Response resp = new SampleHttpd.Response(Status.OK,"text/event-stream",
-                		"event: message\nid: 1\ndata: hello world\n\n");
-                resp.addHeader("Access-Control-Allow-Origin","*");
-                return resp;
-            }
-            else if (mc==0) {
-                mc_async_response = false;
-                Intent intent = new Intent(context, ScanCodeActivity.class);
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(intent);
-                while (!mc_async_response) {}            
-                SampleHttpd.Response resp = new SampleHttpd.Response(Status.OK,"text/plain", mc_result);
-                resp.addHeader("Access-Control-Allow-Origin","*");
+            Response resp;
+            if (push==0) resp = handlePush(uri, parms);
+            else if (mc==0) resp = handleMC();
+            else if (cmapi == 0) resp = handleCMAPI();
+            else {
+                String msg = "<html><body><h1>Request to "+method + " '" + uri + "'\n"+
+                		"Hello from AT&T HTTP Listener at port " + http_port + "</h1>\n";
 
-                return resp;
+                msg += "<form action='?' method='get'>\n" +
+                       "<h1>Please select:</h1>\n" +
+                       "<input type='radio' name='choice' value='mc' checked='yes'/>Mobile Code<br/>\n" +
+                       "<input type='radio' name='choice' value='cmapi'/>OpenCMAPI<br/>\n" +
+                       "<input type='submit' value='SUBMIT'/>" +
+                       "</form>\n";	
+        /*
+                    if (parms.get("username") == null) {
+                        msg += "<form action='?' method='get'>\n" +
+                               "<p>Your name: <input type='text' name='username'></p>\n" +
+                               "</form>\n";
+                    }
+                    else {
+                    	msg += "<p>How are you, " + parms.get("username") + "?</p>";
+                    }
+        */
+                msg += "</body></html>\n";
+                    
+                resp = new Response(msg);        	            	
             }
-            else if (cmapi == 0) {     	
-                SampleHttpd.Response resp = new SampleHttpd.Response(Status.OK,"text/html", handleCMAPI());
-                resp.addHeader("Access-Control-Allow-Origin","*");
-                return resp;
-            }
-     
-            String msg = "<html><body><h1>Request to "+method + " '" + uri + "'\n"+
-            		"Hello from AT&T HTTP Listener at port " + http_port + "</h1>\n";
-
-            msg += "<form action='?' method='get'>\n" +
-                   "<h1>Please select:</h1>\n" +
-                   "<input type='radio' name='choice' value='mc' checked='yes'/>Mobile Code<br/>\n" +
-                   "<input type='radio' name='choice' value='cmapi'/>OpenCMAPI<br/>\n" +
-                   "<input type='submit' value='SUBMIT'/>" +
-                   "</form>\n";	
-    /*
-                if (parms.get("username") == null) {
-                    msg += "<form action='?' method='get'>\n" +
-                           "<p>Your name: <input type='text' name='username'></p>\n" +
-                           "</form>\n";
-                }
-                else {
-                	msg += "<p>How are you, " + parms.get("username") + "?</p>";
-                }
-    */
-            msg += "</body></html>\n";
-                
-            return new SampleHttpd.Response(msg);        	
-         }
+            return(resp);
+        }
+        
+    	public boolean mc_async_response = false;
+    	private String mc_result = "This is supposed to be mc scanning result";
+        private Response handleMC() {
+            mc_async_response = false;
+            Intent intent = new Intent(context, ScanCodeActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+            while (!mc_async_response) {}            
+            SampleHttpd.Response resp = new SampleHttpd.Response(Status.OK,"text/plain", mc_result);
+            resp.addHeader("Access-Control-Allow-Origin","*");
+            return resp;        	
+        }
 
         public void scanResult(String result) {
         	mc_result = result;
         	mc_async_response = true;
         }
         
-        private String handleCMAPI() {
-        	return "<html><body>\n<h1>You have chosen CMAPI</h1>\n</body></html>\n";
+        private Response handlePush(String uri, Map<String, String> parms) {
+            // WRAPI Push API
+        	// Set the accepted sources filter to be used by the Push API server. See where this
+        	// is used in SampleHttpd.
+        	if (parms.get("push-accept-source")!= null) {
+        		pushAcceptSource = parms.get("push-accept-source");
+        		if (pushAcceptSource.indexOf(' ')==0) pushAcceptSource = pushAcceptSource.substring(1);
+        	}
+        	else {
+        		pushAcceptSource = "any";
+        	}
+        	// Log the event
+        	System.out.println("OMA API server received Push API request for source: "+pushAcceptSource);
+        	// 
+            Response resp = new Response(Status.OK,"text/event-stream","");
+            resp.addHeader("Access-Control-Allow-Origin","*");
+            resp.eventsource = true; // This is a flag to to the server to not close the connection...
+            return resp;       	
+        }
+        
+        private Response handleCMAPI() {
+            Response resp = new Response(Status.OK,"text/html","<html><body><h1>You have chosen CMAPI</h1></body></html>");
+            resp.addHeader("Access-Control-Allow-Origin","*");
+            return resp;
         }
     }	
 }

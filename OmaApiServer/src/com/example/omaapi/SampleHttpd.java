@@ -9,6 +9,8 @@ import java.nio.channels.FileChannel;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
+import android.widget.Toast;
+
 /**
  * A simple, tiny, nicely embeddable HTTP server in Java
  * <p/>
@@ -67,6 +69,8 @@ public abstract class SampleHttpd {
 * Common mime type for dynamic content: binary
 */
     public static final String MIME_DEFAULT_BINARY = "application/octet-stream";
+    public static String pushEvent; // Bryan: add Push event buffer
+    public static String pushAcceptSource; // Bryan: add eventsource source filter
     private final String hostname;
     private final int myPort;
     private ServerSocket myServerSocket;
@@ -89,6 +93,7 @@ public abstract class SampleHttpd {
     public SampleHttpd(String hostname, int port) {
         this.hostname = hostname;
         this.myPort = port;
+        pushEvent = "";
         setTempFileManagerFactory(new DefaultTempFileManagerFactory());
         setAsyncRunner(new DefaultAsyncRunner());
     }
@@ -420,6 +425,7 @@ public abstract class SampleHttpd {
 * HTTP response. Return one of these from serve().
 */
     public static class Response {
+    	public boolean eventsource;
         /**
 * HTTP status code after processing, e.g. "200 OK", HTTP_OK
 */
@@ -454,6 +460,7 @@ public abstract class SampleHttpd {
             this.status = status;
             this.mimeType = mimeType;
             this.data = data;
+            this.eventsource = false;
         }
 
         /**
@@ -462,6 +469,7 @@ public abstract class SampleHttpd {
         public Response(Status status, String mimeType, String txt) {
             this.status = status;
             this.mimeType = mimeType;
+            this.eventsource = false;
             try {
                 this.data = txt != null ? new ByteArrayInputStream(txt.getBytes("UTF-8")) : null;
             } catch (java.io.UnsupportedEncodingException uee) {
@@ -517,7 +525,7 @@ public abstract class SampleHttpd {
                 pw.print("\r\n");
                 pw.flush();
 
-                if (requestMethod != Method.HEAD && data != null) {
+               if (requestMethod != Method.HEAD && data != null) {
                     int pending = data.available(); // This is to support partial sends, see serveFile()
                     int BUFFER_SIZE = 16 * 1024;
                     byte[] buff = new byte[BUFFER_SIZE];
@@ -531,10 +539,12 @@ public abstract class SampleHttpd {
                         pending -= read;
                     }
                 }
-                outputStream.flush();
-                outputStream.close();
-                if (data != null)
-                    data.close();
+                if (!eventsource) {
+                    outputStream.flush();
+                    outputStream.close();
+                    if (data != null)
+                        data.close();
+                }
             } catch (IOException ioe) {
                 // Couldn't write? No can do.
             }
@@ -587,7 +597,7 @@ public abstract class SampleHttpd {
                 if (inputStream == null) {
                     return;
                 }
-
+                
                 // Read the first 8192 bytes.
                 // The full header should fit in here.
                 // Apache's default header limit is 8KB.
@@ -621,6 +631,8 @@ public abstract class SampleHttpd {
                     throw new InterruptedException();
                 }
                 String uri = pre.get("uri");
+                // Bryan: log new server session
+                System.out.println("New omaapi server session started for resource ("+uri+") from domain ("+header.get("origin")+")\n");
                 long size = extractContentLength(header);
 
                 // Write the part of body already read to ByteArrayOutputStream f
@@ -712,6 +724,33 @@ public abstract class SampleHttpd {
                 } else {
                     r.setRequestMethod(method);
                     r.send(outputStream);
+                }
+                if (r.eventsource) {
+                	while (true) {
+                		if (pushEvent != "") {
+                            System.out.println("omaapi: new push event ("+pushEvent+"), " +
+                            		"pushAcceptSource=("+pushAcceptSource+")");
+                			if (pushEvent.indexOf("android.provider.Telephony.SMS_RECEIVED")==0) {
+                				int i = pushEvent.indexOf("sms:")+4;
+                				int j = pushEvent.indexOf(" :");
+                				String from = pushEvent.substring(i,j);
+                				if (from.indexOf('+') == 0) from = from.substring(1);
+                				String event = pushEvent.substring(j+2);
+                                System.out.println("omaapi: new SMS ("+event+") from ("+from+")");
+                				if ((pushAcceptSource.indexOf("any")>-1 || pushAcceptSource.indexOf(from)>-1)) {
+                                    System.out.println("omaapi: matches pushAcceptSource ("+pushAcceptSource+")");
+                        			pushEvent = "event: message\ndata: "+event+"\n";
+                        			PrintWriter pw = new PrintWriter(outputStream);
+                        			int pending = pushEvent.length();
+                        			byte[] buff = pushEvent.getBytes("UTF-8");
+                        			outputStream.write(buff, 0, pending);
+                        			pw.print("\r\n");
+                        			pw.flush();
+                				}
+                			}
+                            pushEvent = "";
+                		}
+                	}
                 }
 
                 in.close();

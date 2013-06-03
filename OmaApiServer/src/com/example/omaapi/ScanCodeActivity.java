@@ -15,12 +15,12 @@
  */
 package com.example.omaapi;
 
+import com.example.omaapi.R;
 import android.os.Bundle;
 import android.app.Activity;
 import android.content.Intent;
 import android.view.Menu;
 
-import com.example.omaapi.R;
 import com.google.zxing.integration.android.*;
 
 public class ScanCodeActivity extends Activity {
